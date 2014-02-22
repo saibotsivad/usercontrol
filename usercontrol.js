@@ -18,6 +18,7 @@ var email_required
 var token_expiration_hours
 var reset_token_expiration_hours
 var require_password_with_reset_authentication
+var userdata_filter
 
 var is_valid_url = function(url) {
 	return (typeof url == 'string' || url instanceof String) && url.lastIndexOf('http', 0) === 0
@@ -359,9 +360,9 @@ var create_reset_token = function(input, cb) {
 }
 
 var authenticate_using_reset_token = function(input, cb) {
-	var username = (input.user && input.user.username)   || undefined
-	var password = (input.user && input.fields.password) || undefined
-	var resetToken    = (input.user && input.user.resetToken) || undefined
+	var username =   (input.user && input.user.username)   || undefined
+	var password =   (input.user && input.fields.password) || undefined
+	var resetToken = (input.user && input.user.resetToken) || undefined
 	if (!username || !resetToken || (!password && require_password_with_reset_authentication)) {
 		give('authenticate_using_reset_token', 'invalid username or token', input)
 		cb({ err: { authentication: true } })
@@ -404,6 +405,60 @@ var authenticate_using_reset_token = function(input, cb) {
 	}
 }
 
+// Given a username, session token, and data, set the data for the user.
+var set_data = function(input, cb) {
+	var username = (input.user && input.user.username) || undefined
+	var token    = (input.user && input.user.token)    || undefined
+	var userdata = (input.fields && input.fields.data) || undefined
+	if (!username || !token || !uuid.isValid(token)) {
+		give('set_data', 'invalid username or token', input)
+		cb({ err: { authentication: true } })
+	} else if (!userdata) {
+		give('set_data', 'bad userdata', input)
+		cb({ err: { badUserData: true } })
+	} else {
+		db.lock(username, function(atomic_db, done) {
+			atomic_db.get(username, function(err, data) {
+				if (err) {
+					done()
+					give('set_data', 'username not found', input)
+					cb({ err: true })
+				} else if (!(new Date(data.session[token])) > new Date()) {
+					done()
+					give('set_data', 'session token expired', input)
+					cb({ err: true })
+				} else {
+					userdata_filter(userdata, data, function(filter_err, filtered_userdata) {
+						if (filter_err) {
+							done()
+							give('set_data', 'filter threw error', { input: input, filterErr: filter_err })
+							cb({ err: (typeof filter_err.public === 'undefined' ? 'filter' : filter_err.public ) })
+						} else {
+							if (!data.fields) {
+								data.fields = {}
+							}
+							data.fields.userdata = filtered_userdata
+							atomic_db.put(username, data, function(err) {
+								done()
+								give('set_data', 'user data set', { input: input, userdata: filtered_userdata })
+								cb({
+									user: {
+										username: data.username,
+										token: token,
+										emails: data.emails,
+										fields: data.fields
+									}
+								})
+							})
+						}
+					})
+				}
+			})
+
+		})
+	}
+}
+
 module.exports = function(opts) {
 	db = atomic(opts.db)
 	fields = opts.fields || {}
@@ -414,6 +469,7 @@ module.exports = function(opts) {
 	reset_token_expiration_hours = opts.resetTokenExpirationHours || 24
 	require_password_with_reset_authentication = opts.requirePasswordWithResetAuthentication || true
 	log = opts.logging || function() {}
+	userdata_filter = opts.userdataFilter || function(new_data, old_data, cb) { cb(null, new_data) }
 
 	return {
 		on: emit,
@@ -424,6 +480,7 @@ module.exports = function(opts) {
 		invalidateSession: invalidate_session,
 		setPassword: set_password,
 		createResetToken: create_reset_token,
-		authenticateUsingResetToken: authenticate_using_reset_token
+		authenticateUsingResetToken: authenticate_using_reset_token,
+		setData: set_data
 	}
 }
