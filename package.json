@@ -9,6 +9,10 @@
   },
   "homepage": "https://github.com/saibotsivad/usercontrol",
   "description": "Mildly opinionated user authentication, using leveldb.",
+  "bugs": {
+    "url" : "https://github.com/saibotsivad/usercontrol/issues",
+    "email" : "github@davistobias.com"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/saibotsivad/usercontrol.git"

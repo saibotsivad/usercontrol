@@ -76,7 +76,6 @@ var create_user = function(input, cb) {
 	var username = (input.fields && input.fields.username) || undefined
 	var password = (input.fields && input.fields.password) || undefined
 	var email    = (input.fields && input.fields.email)    || undefined
-
 	if (!password || password.length < min_password_length) {
 		give('create_user', 'password invalid', input)
 		cb({ err: { badPassword: true } })
@@ -95,6 +94,9 @@ var create_user = function(input, cb) {
 						session: {}
 					}
 
+					new_user.verify = {}
+					new_user.verify[email] = generate_token(reset_token_expiration_hours)
+
 					new_user.emails[email] = {
 						email: email,
 						verified: false
@@ -105,7 +107,7 @@ var create_user = function(input, cb) {
 
 					atomic_db.put(username, new_user, function(err) {
 						done()
-						give('create_user', 'user created', input)
+						give('create_user', 'user created', new_user)
 						cb({
 							user: {
 								token: token,
@@ -127,7 +129,7 @@ var create_user = function(input, cb) {
 // Given a session token and username, see if that session token is valid. If so, return the user data.
 var is_user_authenticated = function(input, cb) {
 	var username = (input.user && input.user.username) || null
-	var token    = (input.user && input.user.token)    || null
+	var token    = (input.user && input.user.token && input.user.token.id) || null
 	if (!username || !uuid.isValid(token)) {
 		give('is_user_authenticated', 'username or token invalid', input)
 		cb({ err: { authentication: true } })
@@ -201,7 +203,7 @@ var authenticate_user = function(input, cb) {
 // Given a username and session token, delete that token from the database.
 var invalidate_session = function(input, cb) {
 	var username = (input.user && input.user.username) || undefined
-	var token    = (input.user && input.user.token)    || undefined
+	var token    = (input.user && input.user.token && input.user.token.id) || undefined
 	if (!username || !uuid.isValid(token)) {
 		give('invalidate_session', 'invalid username or token', input)
 		cb({ err: { authentication: true } })
@@ -228,7 +230,7 @@ var invalidate_session = function(input, cb) {
 // Given a username, session token, and new password, reset the password for the user.
 var set_password = function(input, cb) {
 	var username = (input.user && input.user.username) || undefined
-	var token    = (input.user && input.user.token)    || undefined
+	var token    = (input.user && input.user.token && input.user.token.id) || undefined
 	var password = (input.fields && input.fields.password) || undefined
 	if (!token || !username || !password || !uuid.isValid(token)) {
 		give('set_password', 'invalid username or password or token', input)
@@ -271,7 +273,7 @@ var set_password = function(input, cb) {
 // Given a username, session token, and new username, change the username for the user.
 var set_username = function(input, cb) {
 	var old_username = (input.user && user.username)    || undefined
-	var token        = (input.user && input.user.token) || undefined
+	var token        = (input.user && input.user.token && input.user.token.id) || undefined
 	var new_username = (input.fields && input.fields.username) || undefined
 	if (!old_username || !new_username || !token || !uuid.isValid(token)) {
 		give('set_username', 'username or token bad', input)
@@ -362,7 +364,7 @@ var create_reset_token = function(input, cb) {
 var authenticate_using_reset_token = function(input, cb) {
 	var username =   (input.user && input.user.username)   || undefined
 	var password =   (input.user && input.fields.password) || undefined
-	var resetToken = (input.user && input.user.resetToken) || undefined
+	var resetToken = (input.user && input.user.resetToken && input.user.resetToken.id) || undefined
 	if (!username || !resetToken || (!password && require_password_with_reset_authentication)) {
 		give('authenticate_using_reset_token', 'invalid username or token', input)
 		cb({ err: { authentication: true } })
@@ -405,10 +407,124 @@ var authenticate_using_reset_token = function(input, cb) {
 	}
 }
 
+// add an email to the user
+var add_email = function(input, cb) {
+	var username = (input.user && input.user.username) || undefined
+	var token    = (input.user && input.user.token && input.user.token.id) || undefined
+	var email    = (input.fields && input.fields.email) || undefined
+	if (!username || !token || !uuid.isValid(token)) {
+		give('add_email', 'invalid username or token', input)
+		cb({ err: { authentication: true } })
+	} else if (!email) {
+		give('add_email', 'no email included', input)
+		cb({ err: { noEmail: true } })
+	} else {
+		db.lock(username, function(atomic_db, done) {
+			atomic_db.get(username, function(err, data) {
+				if (err) {
+					done()
+					give('add_email', 'username not found', input)
+					cb({ err: true })
+				} else if (!(new Date(data.session[token])) > new Date()) {
+					done()
+					give('add_email', 'session token expired', input)
+					cb({ err: true })
+				} else if (data.emails[email]) {
+					done()
+					give('add_email', 'user email already exists', input)
+					cb({ err: { emailExists: true } })
+				} else {
+					if (!data.verify) {
+						data.verify = {}
+					}
+					data.verify[email] = generate_token(reset_token_expiration_hours)
+					data.emails[email] = {
+						email: email,
+						verified: false
+					}
+					atomic_db.put(username, data, function(err) {
+						done()
+						// the email verification token is sent through the emitter, not returned to the user
+						give('add_email', 'added email to user', data)
+						cb({
+							user: {
+								username: data.username,
+								token: token,
+								emails: data.emails,
+								fields: data.fields
+							}
+						})
+					})
+				}
+			})
+
+		})
+	}
+}
+
+// verify an email using a token
+var verify_email = function(input, cb) {
+	var username   = (input.user && input.user.username) || undefined
+	var token      = (input.user && input.user.token && input.user.token.id) || undefined
+	var email      = (input.fields && input.fields.email) || undefined
+	var emailToken = (input.fields && input.fields.emailToken && input.fields.emailToken.id) || undefined
+	if (!username || !token || !uuid.isValid(token)) {
+		give('verify_email', 'invalid username or token', input)
+		cb({ err: { authentication: true } })
+	} else if (!email) {
+		give('verify_email', 'no email included', input)
+		cb({ err: { authentication: true } })
+	} else if (!emailToken || !uuid.isValid(emailToken)) {
+		give('verify_email', 'email token invalid or not included', input)
+		cb({ err: { authentication: true } })
+	} else {
+		db.lock(username, function(atomic_db, done) {
+			atomic_db.get(username, function(err, data) {
+				if (err) {
+					done()
+					give('verify_email', 'username not found', input)
+					cb({ err: true })
+				} else if (!(new Date(data.session[token])) > new Date()) {
+					done()
+					give('verify_email', 'session token expired', input)
+					cb({ err: true })
+				} else if (!data.emails[email]) {
+					done()
+					give('verify_email', 'email not found', input)
+					cb({ err: { emailNotFound: true } })
+				} else if (!data.verify[email]) {
+					done()
+					give('verify_email', 'verify email not found', input)
+					cb({ err: { verifyEmailNotFound: true } })
+				} else if (new Date(data.verify[email].expires) < new Date()) {
+					done()
+					give('verify_email', 'session token expired', input)
+					cb({ err: { verifyTokenExpired: true } })
+				} else {
+					data.emails[email].verified = new Date()
+					atomic_db.put(username, data, function(err) {
+						done()
+						give('add_email', 'verified user email', input)
+						cb({
+							user: {
+								username: data.username,
+								token: token,
+								emails: data.emails,
+								fields: data.fields
+							}
+						})
+					})
+				}
+			})
+
+		})
+	}
+}
+
 // Given a username, session token, and data, set the data for the user.
 var set_data = function(input, cb) {
 	var username = (input.user && input.user.username) || undefined
-	var token    = (input.user && input.user.token)    || undefined
+	var token    = (input.user && input.user.token && input.user.token.id) || undefined
 	var userdata = (input.fields && input.fields.data) || undefined
 	if (!username || !token || !uuid.isValid(token)) {
 		give('set_data', 'invalid username or token', input)
@@ -480,6 +596,8 @@ module.exports = function(opts) {
 		invalidateSession: invalidate_session,
 		setPassword: set_password,
 		createResetToken: create_reset_token,
+		addEmail: add_email,
+		verifyEmail: verify_email,
 		authenticateUsingResetToken: authenticate_using_reset_token,
 		setData: set_data
 	}
