@@ -1,6 +1,8 @@
 usercontrol
 ===========
 
+[![Greenkeeper badge](https://badges.greenkeeper.io/saibotsivad/usercontrol.svg)](https://greenkeeper.io/)
+
 
 A dnode compliant user authentication system, using leveldb.
 
